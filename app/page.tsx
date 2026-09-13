@@ -1,69 +1,907 @@
-import Image from "next/image";
+"use client";
+
+import { ChangeEvent, DragEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ArrowUpRight,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  CircleAlert,
+  FileText,
+  Loader2,
+  MessageSquareText,
+  Minus,
+  Plus,
+  RotateCcw,
+  Search,
+  ShieldCheck,
+  Sparkles,
+  Upload,
+  X,
+} from "lucide-react";
+
+type Mode = "mock" | "real";
+
+type DocumentInfo = {
+  filename: string;
+  pages: number;
+  chunks: number;
+};
+
+type Answer = {
+  answer: string;
+  page_number: number;
+  exact_quote: string;
+};
+
+type Message = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  source?: {
+    page: number;
+    quote: string;
+  };
+};
+
+const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+const API_MODE: Mode =
+  process.env.NEXT_PUBLIC_API_MODE === "real" ? "real" : "mock";
+
+const MOCK_ANSWERS: Record<string, Answer> = {
+  default: {
+    answer:
+      "The report indicates that the change was primarily driven by stronger operating performance and higher demand across the company’s core business segments.",
+    page_number: 9,
+    exact_quote:
+      "Revenue growth was primarily driven by higher demand across our core business segments, supported by improved operating performance.",
+  },
+  revenue: {
+    answer:
+      "Revenue increased primarily because of higher demand across the company’s core business segments, with operating performance also contributing to the improvement.",
+    page_number: 42,
+    exact_quote:
+      "Revenue growth was primarily driven by higher demand across our core business segments, supported by improved operating performance.",
+  },
+  risk: {
+    answer:
+      "The report highlights market conditions, operating costs, competition, and changes in customer demand as important factors that could affect future performance.",
+    page_number: 18,
+    exact_quote:
+      "Our results may be affected by changes in market conditions, operating costs, competition, and customer demand.",
+  },
+  expenses: {
+    answer:
+      "Operating expenses increased during the period, mainly reflecting higher personnel costs, investment in operations, and other business-related expenses.",
+    page_number: 47,
+    exact_quote:
+      "Operating expenses increased during the year primarily due to higher personnel costs and continued investment in our operations.",
+  },
+};
+
+function getMockAnswer(question: string): Answer {
+  const q = question.toLowerCase();
+
+  if (q.includes("revenue") || q.includes("sales") || q.includes("growth")) {
+    return MOCK_ANSWERS.revenue;
+  }
+
+  if (q.includes("risk") || q.includes("risks")) {
+    return MOCK_ANSWERS.risk;
+  }
+
+  if (
+    q.includes("expense") ||
+    q.includes("cost") ||
+    q.includes("operating expense")
+  ) {
+    return MOCK_ANSWERS.expenses;
+  }
+
+  return MOCK_ANSWERS.default;
+}
 
 export default function Home() {
-  return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+
+  const [documentInfo, setDocumentInfo] = useState<DocumentInfo | null>(null);
+
+  const [isDragging, setIsDragging] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+
+  const [question, setQuestion] = useState("");
+  const [isAsking, setIsAsking] = useState(false);
+  const [chatError, setChatError] = useState("");
+
+  const [messages, setMessages] = useState<Message[]>([]);
+
+  const [currentPage, setCurrentPage] = useState(1);
+  const [zoom, setZoom] = useState(100);
+
+  const documentReady = Boolean(uploadedFile && documentInfo);
+
+  const suggestedQuestions = useMemo(
+    () => [
+      "What were the main drivers of revenue growth?",
+      "What risks did management identify?",
+      "How did operating expenses change?",
+    ],
+    []
+  );
+
+  useEffect(() => {
+    return () => {
+      if (pdfUrl) {
+        URL.revokeObjectURL(pdfUrl);
+      }
+    };
+  }, [pdfUrl]);
+
+  function openFilePicker() {
+    fileInputRef.current?.click();
+  }
+
+  function handleFileInput(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+
+    if (file) {
+      processFile(file);
+    }
+
+    event.target.value = "";
+  }
+
+  function handleDragOver(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    setIsDragging(true);
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    setIsDragging(false);
+  }
+
+  function handleDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    setIsDragging(false);
+
+    const file = event.dataTransfer.files?.[0];
+
+    if (file) {
+      processFile(file);
+    }
+  }
+
+  async function processFile(file: File) {
+    setUploadError("");
+    setChatError("");
+
+    if (file.type !== "application/pdf") {
+      setUploadError("Please select a PDF document.");
+      return;
+    }
+
+    if (file.size > 50 * 1024 * 1024) {
+      setUploadError("This file is larger than the 50 MB limit.");
+      return;
+    }
+
+    setIsUploading(true);
+
+    try {
+      if (pdfUrl) {
+        URL.revokeObjectURL(pdfUrl);
+      }
+
+      const objectUrl = URL.createObjectURL(file);
+      setPdfUrl(objectUrl);
+      setUploadedFile(file);
+      setMessages([]);
+      setCurrentPage(1);
+      setZoom(100);
+
+      if (API_MODE === "mock") {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
+        setDocumentInfo({
+          filename: file.name,
+          pages: 87,
+          chunks: 214,
+        });
+
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch(`${API_BASE_URL}/upload`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Upload failed with status ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      setDocumentInfo({
+        filename: data.filename || file.name,
+        pages: Number(data.pages) || 1,
+        chunks: Number(data.chunks) || 0,
+      });
+    } catch (error) {
+      console.error(error);
+
+      setUploadedFile(null);
+      setDocumentInfo(null);
+
+      if (pdfUrl) {
+        URL.revokeObjectURL(pdfUrl);
+        setPdfUrl(null);
+      }
+
+      setUploadError(
+        API_MODE === "real"
+          ? "Could not connect to the document service. Make sure the FastAPI server is running."
+          : "Something went wrong while loading the document."
+      );
+    } finally {
+      setIsUploading(false);
+    }
+  }
+
+  async function askQuestion(
+    event?: FormEvent<HTMLFormElement>,
+    customQuestion?: string
+  ) {
+    event?.preventDefault();
+
+    const query = (customQuestion ?? question).trim();
+
+    if (!query || !documentReady || isAsking) {
+      return;
+    }
+
+    setChatError("");
+    setIsAsking(true);
+
+    const userMessage: Message = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content: query,
+    };
+
+    setMessages((previous) => [...previous, userMessage]);
+    setQuestion("");
+
+    try {
+      let result: Answer;
+
+      if (API_MODE === "mock") {
+        await new Promise((resolve) => setTimeout(resolve, 850));
+        result = getMockAnswer(query);
+      } else {
+        const response = await fetch(`${API_BASE_URL}/chat`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            query,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`Chat failed with status ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        result = {
+          answer: data.answer || "No answer was returned.",
+          page_number: Number(data.page_number) || 1,
+          exact_quote:
+            data.exact_quote ||
+            data.quote ||
+            "No supporting excerpt was returned.",
+        };
+      }
+
+      const safePage = Math.min(
+        Math.max(result.page_number, 1),
+        documentInfo?.pages || result.page_number
+      );
+
+      const assistantMessage: Message = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: result.answer,
+        source: {
+          page: safePage,
+          quote: result.exact_quote,
+        },
+      };
+
+      setMessages((previous) => [...previous, assistantMessage]);
+      setCurrentPage(safePage);
+    } catch (error) {
+      console.error(error);
+
+      setChatError(
+        API_MODE === "real"
+          ? "The document service could not answer this question."
+          : "Something went wrong while generating the answer."
+      );
+    } finally {
+      setIsAsking(false);
+    }
+  }
+
+  function jumpToPage(page: number) {
+    if (!documentInfo) return;
+
+    const nextPage = Math.min(
+      Math.max(page, 1),
+      documentInfo.pages
+    );
+
+    setCurrentPage(nextPage);
+  }
+
+  function resetSession() {
+    if (pdfUrl) {
+      URL.revokeObjectURL(pdfUrl);
+    }
+
+    setUploadedFile(null);
+    setPdfUrl(null);
+    setDocumentInfo(null);
+    setMessages([]);
+    setQuestion("");
+    setCurrentPage(1);
+    setZoom(100);
+    setUploadError("");
+    setChatError("");
+  }
+
+  function formatFileSize(bytes: number) {
+    if (bytes < 1024 * 1024) {
+      return `${Math.round(bytes / 1024)} KB`;
+    }
+
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  if (!documentReady) {
+    return (
+      <main className="min-h-screen bg-[#080b12] text-[#f4f5f7]">
+        <div className="absolute inset-0 pointer-events-none overflow-hidden">
+          <div className="absolute -top-48 left-1/2 h-[500px] w-[700px] -translate-x-1/2 rounded-full bg-indigo-500/[0.045] blur-[120px]" />
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+
+        <header className="relative mx-auto flex h-20 max-w-7xl items-center justify-between px-6 lg:px-10">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-white/[0.09] bg-white/[0.035]">
+              <FileText size={18} strokeWidth={1.7} />
+            </div>
+
+            <div>
+              <div className="text-[15px] font-semibold tracking-[-0.02em]">
+                FinDocQA
+              </div>
+              <div className="hidden text-[10px] uppercase tracking-[0.16em] text-white/35 sm:block">
+                Document intelligence
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="hidden items-center gap-2 rounded-full border border-white/[0.07] bg-white/[0.025] px-3 py-1.5 text-[11px] text-white/45 sm:flex">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+              Private session
+            </div>
+
+            <div className="text-[11px] text-white/30">
+              {API_MODE === "mock" ? "Demo mode" : "Connected"}
+            </div>
+          </div>
+        </header>
+
+        <section className="relative mx-auto flex min-h-[calc(100vh-5rem)] max-w-5xl items-center px-6 pb-20 pt-8 lg:px-10">
+          <div className="w-full">
+            <div className="mb-10 max-w-2xl">
+              <div className="mb-5 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.18em] text-indigo-300/75">
+                <span className="h-px w-7 bg-indigo-400/60" />
+                Financial document research
+              </div>
+
+              <h1 className="max-w-3xl text-4xl font-semibold leading-[1.08] tracking-[-0.045em] text-white sm:text-5xl lg:text-[60px]">
+                Ask the report.
+                <br />
+                <span className="text-white/42">See the evidence.</span>
+              </h1>
+
+              <p className="mt-6 max-w-xl text-[15px] leading-7 text-white/45">
+                Upload a financial report and ask questions in plain language.
+                Every answer is tied back to the page and passage it came from.
+              </p>
+            </div>
+
+            <div
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              className={[
+                "relative overflow-hidden rounded-2xl border transition-all duration-200",
+                isDragging
+                  ? "border-indigo-400/70 bg-indigo-400/[0.06]"
+                  : "border-white/[0.10] bg-[#0d111a]",
+              ].join(" ")}
+            >
+              <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/[0.12] to-transparent" />
+
+              <div className="grid min-h-[330px] lg:grid-cols-[1fr_300px]">
+                <div className="flex flex-col justify-center p-8 sm:p-12 lg:p-14">
+                  <div className="mb-7 flex h-11 w-11 items-center justify-center rounded-xl border border-white/[0.09] bg-white/[0.035]">
+                    <Upload
+                      size={19}
+                      strokeWidth={1.6}
+                      className="text-white/70"
+                    />
+                  </div>
+
+                  <h2 className="text-xl font-medium tracking-[-0.02em]">
+                    {isDragging
+                      ? "Drop your report here"
+                      : "Upload a financial document"}
+                  </h2>
+
+                  <p className="mt-2 max-w-md text-sm leading-6 text-white/40">
+                    10-Ks, annual reports, earnings reports, and other
+                    text-based financial PDFs.
+                  </p>
+
+                  <div className="mt-7 flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={openFilePicker}
+                      disabled={isUploading}
+                      className="inline-flex h-11 items-center gap-2.5 rounded-lg bg-white px-5 text-sm font-semibold text-[#090c12] transition hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {isUploading ? (
+                        <>
+                          <Loader2 size={16} className="animate-spin" />
+                          Processing
+                        </>
+                      ) : (
+                        <>
+                          Choose PDF
+                          <ArrowUpRight size={15} />
+                        </>
+                      )}
+                    </button>
+
+                    <span className="text-xs text-white/25">
+                      or drag and drop
+                    </span>
+                  </div>
+
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="application/pdf,.pdf"
+                    onChange={handleFileInput}
+                    className="hidden"
+                  />
+
+                  {uploadError && (
+                    <div className="mt-5 flex max-w-lg items-start gap-2.5 rounded-lg border border-red-400/15 bg-red-400/[0.05] px-3.5 py-3 text-xs text-red-200/75">
+                      <CircleAlert size={15} className="mt-0.5 shrink-0" />
+                      <span>{uploadError}</span>
+                    </div>
+                  )}
+
+                  <div className="mt-7 flex flex-wrap gap-x-5 gap-y-2 text-[11px] text-white/25">
+                    <span>PDF</span>
+                    <span>•</span>
+                    <span>50 MB maximum</span>
+                    <span>•</span>
+                    <span>Active session only</span>
+                  </div>
+                </div>
+
+                <div className="border-t border-white/[0.07] bg-white/[0.018] p-8 lg:border-l lg:border-t-0">
+                  <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/30">
+                    How it works
+                  </div>
+
+                  <div className="mt-8 space-y-7">
+                    {[
+                      ["01", "Upload", "Add the report you want to research."],
+                      ["02", "Ask", "Ask questions about its contents."],
+                      ["03", "Verify", "Trace answers back to the source."],
+                    ].map(([number, title, description]) => (
+                      <div key={number} className="flex gap-4">
+                        <span className="font-mono text-[10px] text-white/25">
+                          {number}
+                        </span>
+
+                        <div>
+                          <div className="text-sm font-medium text-white/80">
+                            {title}
+                          </div>
+                          <div className="mt-1 text-xs leading-5 text-white/35">
+                            {description}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mt-9 border-t border-white/[0.07] pt-6">
+                    <div className="flex items-center gap-2 text-xs text-white/35">
+                      <ShieldCheck size={14} />
+                      No persistent document storage
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-7 flex items-center justify-between text-[11px] text-white/20">
+              <span>FinDocQA</span>
+              <span>Evidence-first document analysis</span>
+            </div>
+          </div>
+        </section>
       </main>
-    </div>
+    );
+  }
+
+  return (
+    <main className="flex h-screen min-h-[700px] flex-col overflow-hidden bg-[#090c12] text-[#f4f5f7]">
+      {/* HEADER */}
+      <header className="z-20 flex h-[68px] shrink-0 items-center justify-between border-b border-white/[0.08] bg-[#090c12] px-4 sm:px-6">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.025]">
+            <FileText size={17} className="text-white/75" />
+          </div>
+
+          <div className="min-w-0">
+            <div className="text-[14px] font-semibold tracking-[-0.02em]">
+              FinDocQA
+            </div>
+            <div className="hidden max-w-[280px] truncate text-[10px] text-white/30 sm:block">
+              {documentInfo?.filename}
+            </div>
+          </div>
+        </div>
+
+        <div className="hidden items-center gap-2 md:flex">
+          <div className="flex items-center gap-2 rounded-full border border-white/[0.07] px-3 py-1.5">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+            <span className="text-[11px] text-white/45">Document ready</span>
+          </div>
+
+          <div className="text-[11px] text-white/25">
+            {documentInfo?.pages} pages
+          </div>
+
+          <button
+            type="button"
+            onClick={resetSession}
+            className="ml-2 inline-flex items-center gap-2 rounded-lg border border-white/[0.08] px-3 py-2 text-[11px] text-white/45 transition hover:border-white/[0.15] hover:text-white/75"
+          >
+            <RotateCcw size={13} />
+            New document
+          </button>
+        </div>
+
+        <button
+          type="button"
+          onClick={resetSession}
+          className="md:hidden"
+          aria-label="New document"
+        >
+          <X size={18} className="text-white/40" />
+        </button>
+      </header>
+
+      {/* WORKSPACE */}
+      <div className="grid min-h-0 flex-1 lg:grid-cols-[390px_minmax(0,1fr)]">
+        {/* LEFT PANEL */}
+        <aside className="flex min-h-0 flex-col border-b border-white/[0.08] bg-[#0b0f16] lg:border-b-0 lg:border-r">
+          <div className="border-b border-white/[0.07] px-5 py-5">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.17em] text-white/30">
+                  Research
+                </div>
+
+                <h2 className="mt-2 truncate text-sm font-medium text-white/80">
+                  {documentInfo?.filename}
+                </h2>
+              </div>
+
+              <div className="shrink-0 text-right">
+                <div className="font-mono text-[11px] text-white/40">
+                  {documentInfo?.pages}p
+                </div>
+                <div className="mt-1 text-[10px] text-white/20">
+                  {documentInfo?.chunks} sections
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-6">
+            {messages.length === 0 ? (
+              <div>
+                <div className="flex items-center gap-2 text-xs font-medium text-white/55">
+                  <MessageSquareText size={14} />
+                  Ask about the report
+                </div>
+
+                <p className="mt-2 max-w-xs text-[12px] leading-5 text-white/30">
+                  Start with a question below. Answers will include the
+                  supporting page and passage.
+                </p>
+
+                <div className="mt-7 space-y-2">
+                  {suggestedQuestions.map((item) => (
+                    <button
+                      key={item}
+                      type="button"
+                      onClick={() => askQuestion(undefined, item)}
+                      disabled={isAsking}
+                      className="group w-full rounded-lg border border-white/[0.07] bg-white/[0.018] px-3.5 py-3 text-left text-xs leading-5 text-white/45 transition hover:border-white/[0.14] hover:bg-white/[0.035] hover:text-white/75 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <span>{item}</span>
+                      <ArrowUpRight
+                        size={13}
+                        className="mt-1 float-right opacity-0 transition group-hover:opacity-60"
+                      />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-7">
+                {messages.map((message) => (
+                  <div key={message.id}>
+                    {message.role === "user" ? (
+                      <div>
+                        <div className="mb-2 text-[9px] font-semibold uppercase tracking-[0.16em] text-white/25">
+                          You
+                        </div>
+
+                        <div className="text-[13px] leading-6 text-white/75">
+                          {message.content}
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <div className="mb-2 flex items-center gap-2 text-[9px] font-semibold uppercase tracking-[0.16em] text-indigo-300/60">
+                          <span className="h-1.5 w-1.5 rounded-full bg-indigo-400/70" />
+                          Answer
+                        </div>
+
+                        <div className="text-[13px] leading-6 text-white/70">
+                          {message.content}
+                        </div>
+
+                        {message.source && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              jumpToPage(message.source!.page)
+                            }
+                            className="group mt-4 w-full overflow-hidden rounded-lg border border-white/[0.08] bg-white/[0.02] text-left transition hover:border-indigo-300/25 hover:bg-indigo-300/[0.025]"
+                          >
+                            <div className="flex items-center justify-between border-b border-white/[0.06] px-3.5 py-2.5">
+                              <div className="flex items-center gap-2">
+                                <span className="text-[9px] font-semibold uppercase tracking-[0.15em] text-white/30">
+                                  Source
+                                </span>
+                                <span className="font-mono text-[10px] text-indigo-300/75">
+                                  p. {message.source.page}
+                                </span>
+                              </div>
+
+                              <ArrowUpRight
+                                size={13}
+                                className="text-white/25 transition group-hover:text-indigo-300/80"
+                              />
+                            </div>
+
+                            <div className="px-3.5 py-3">
+                              <p className="line-clamp-3 text-[11px] leading-5 text-white/40">
+                                “{message.source.quote}”
+                              </p>
+
+                              <div className="mt-3 text-[10px] font-medium text-white/30 group-hover:text-indigo-300/75">
+                                View source page →
+                              </div>
+                            </div>
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+
+                {isAsking && (
+                  <div>
+                    <div className="mb-2 text-[9px] font-semibold uppercase tracking-[0.16em] text-indigo-300/60">
+                      Answer
+                    </div>
+
+                    <div className="flex items-center gap-2 text-xs text-white/30">
+                      <Loader2 size={13} className="animate-spin" />
+                      Searching the document…
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* QUESTION BOX */}
+          <div className="border-t border-white/[0.07] p-4">
+            {chatError && (
+              <div className="mb-3 flex items-start gap-2 rounded-lg border border-red-400/15 bg-red-400/[0.04] px-3 py-2.5 text-[11px] text-red-200/70">
+                <CircleAlert size={13} className="mt-0.5 shrink-0" />
+                {chatError}
+              </div>
+            )}
+
+            <form onSubmit={askQuestion}>
+              <div className="relative rounded-xl border border-white/[0.09] bg-[#080b11] transition focus-within:border-white/[0.17]">
+                <textarea
+                  value={question}
+                  onChange={(event) => setQuestion(event.target.value)}
+                  disabled={isAsking}
+                  rows={3}
+                  placeholder="Ask a question about the report…"
+                  className="w-full resize-none bg-transparent px-4 pb-12 pt-3.5 text-[12px] leading-5 text-white outline-none placeholder:text-white/20 disabled:opacity-50"
+                />
+
+                <div className="absolute bottom-2.5 left-3.5 text-[9px] text-white/20">
+                  Answers are grounded in the uploaded document
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={!question.trim() || isAsking}
+                  className="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-lg bg-white text-[#090c12] transition hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-20"
+                  aria-label="Ask question"
+                >
+                  {isAsking ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <ArrowUpRight size={15} />
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </aside>
+
+        {/* RIGHT DOCUMENT */}
+        <section className="relative flex min-h-0 flex-col bg-[#11151d]">
+          {/* DOCUMENT TOOLBAR */}
+          <div className="flex h-[58px] shrink-0 items-center justify-between border-b border-white/[0.07] bg-[#0d1118] px-4 sm:px-5">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="hidden text-[10px] font-semibold uppercase tracking-[0.16em] text-white/25 sm:block">
+                Document
+              </div>
+
+              <div className="h-3 w-px bg-white/[0.08]" />
+
+              <div className="flex min-w-0 items-center gap-2">
+                <FileText size={13} className="shrink-0 text-white/30" />
+                <span className="max-w-[180px] truncate text-[11px] text-white/45 sm:max-w-[300px]">
+                  {documentInfo?.filename}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setZoom((value) => Math.max(60, value - 10))}
+                disabled={zoom <= 60}
+                className="flex h-8 w-8 items-center justify-center rounded-md text-white/30 transition hover:bg-white/[0.05] hover:text-white/70 disabled:opacity-20"
+                aria-label="Zoom out"
+              >
+                <Minus size={14} />
+              </button>
+
+              <span className="w-10 text-center font-mono text-[10px] text-white/35">
+                {zoom}%
+              </span>
+
+              <button
+                type="button"
+                onClick={() => setZoom((value) => Math.min(160, value + 10))}
+                disabled={zoom >= 160}
+                className="flex h-8 w-8 items-center justify-center rounded-md text-white/30 transition hover:bg-white/[0.05] hover:text-white/70 disabled:opacity-20"
+                aria-label="Zoom in"
+              >
+                <Plus size={14} />
+              </button>
+
+              <div className="mx-2 h-4 w-px bg-white/[0.07]" />
+
+              <button
+                type="button"
+                onClick={() => jumpToPage(currentPage - 1)}
+                disabled={currentPage <= 1}
+                className="flex h-8 w-8 items-center justify-center rounded-md text-white/30 transition hover:bg-white/[0.05] hover:text-white/70 disabled:opacity-20"
+                aria-label="Previous page"
+              >
+                <ChevronLeft size={15} />
+              </button>
+
+              <div className="min-w-[70px] text-center font-mono text-[10px] text-white/45">
+                {currentPage}{" "}
+                <span className="text-white/20">
+                  / {documentInfo?.pages}
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => jumpToPage(currentPage + 1)}
+                disabled={currentPage >= (documentInfo?.pages || 1)}
+                className="flex h-8 w-8 items-center justify-center rounded-md text-white/30 transition hover:bg-white/[0.05] hover:text-white/70 disabled:opacity-20"
+                aria-label="Next page"
+              >
+                <ChevronRight size={15} />
+              </button>
+            </div>
+          </div>
+
+          {/* PDF */}
+          <div className="relative min-h-0 flex-1 overflow-hidden bg-[#1a1e26]">
+            <div className="absolute left-4 top-4 z-10 flex items-center gap-2 rounded-md border border-white/[0.08] bg-[#0b0f16]/90 px-2.5 py-1.5 backdrop-blur">
+              <Search size={11} className="text-white/30" />
+              <span className="text-[9px] uppercase tracking-[0.12em] text-white/35">
+                Page {currentPage}
+              </span>
+            </div>
+
+            {pdfUrl && (
+              <iframe
+                key={`${pdfUrl}-${currentPage}-${zoom}`}
+                src={`${pdfUrl}#page=${currentPage}&zoom=${zoom}`}
+                title="Financial report"
+                className="h-full w-full border-0"
+              />
+            )}
+          </div>
+
+          {/* BOTTOM STATUS */}
+          <div className="flex h-9 shrink-0 items-center justify-between border-t border-white/[0.07] bg-[#0d1118] px-4 text-[9px] text-white/20 sm:px-5">
+            <div className="flex items-center gap-2">
+              <Check size={11} className="text-emerald-400/60" />
+              <span>Source-grounded document analysis</span>
+            </div>
+
+            <div className="hidden sm:block">
+              {documentInfo?.chunks} indexed sections
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
   );
 }
