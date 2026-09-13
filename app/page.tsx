@@ -44,11 +44,9 @@ type Message = {
   };
 };
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE_URL = "https://findocqa-backend.onrender.com";
 
-const API_MODE: Mode =
-  process.env.NEXT_PUBLIC_API_MODE === "real" ? "real" : "mock";
+const API_MODE: Mode = "real";
 
 const MOCK_ANSWERS: Record<string, Answer> = {
   default: {
